@@ -17,7 +17,7 @@ var syncCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Imported: %d  Exported: %d\n", result.Imported, result.Exported)
+		fmt.Printf("Imported: %d  Exported: %d  Deleted: %d\n", result.Imported, result.Exported, result.Deleted)
 		return nil
 	},
 }

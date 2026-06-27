@@ -4,8 +4,94 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+// WriteGcalID writes the GcalID back into the todo's source org file.
+// Finds the heading by title and inserts/updates :GCAL_ID: in its PROPERTIES drawer.
+func WriteGcalID(todo *Todo) error {
+	path := expandHome(todo.File)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+
+	// find first heading matching this title
+	headingIdx := -1
+	for i, line := range lines {
+		if m := headingRe.FindStringSubmatch(line); m != nil {
+			title := strings.TrimSpace(m[4])
+			if tm := tagsRe.FindStringSubmatch(title); tm != nil {
+				title = strings.TrimSpace(tagsRe.ReplaceAllString(title, ""))
+			}
+			if title == todo.Title {
+				headingIdx = i
+				break
+			}
+		}
+	}
+	if headingIdx == -1 {
+		return nil
+	}
+
+	propsStart, propsEnd, gcalLine := -1, -1, -1
+	for i := headingIdx + 1; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trimmed, "*") {
+			break
+		}
+		if trimmed == ":PROPERTIES:" {
+			propsStart = i
+		}
+		if propsStart >= 0 && strings.HasPrefix(trimmed, ":GCAL_ID:") {
+			gcalLine = i
+		}
+		if trimmed == ":END:" && propsStart >= 0 {
+			propsEnd = i
+			break
+		}
+	}
+
+	var out []string
+	switch {
+	case gcalLine >= 0:
+		// update existing line
+		for i, line := range lines {
+			if i == gcalLine {
+				out = append(out, "  :GCAL_ID: "+todo.GcalID)
+			} else {
+				out = append(out, line)
+			}
+		}
+	case propsStart >= 0 && propsEnd >= 0:
+		// insert before :END:
+		for i, line := range lines {
+			if i == propsEnd {
+				out = append(out, "  :GCAL_ID: "+todo.GcalID)
+			}
+			out = append(out, line)
+		}
+	default:
+		// no PROPERTIES block — find insert point after SCHEDULED/DEADLINE lines
+		insertAt := headingIdx + 1
+		for insertAt < len(lines) {
+			t := strings.TrimSpace(lines[insertAt])
+			if strings.HasPrefix(t, "SCHEDULED:") || strings.HasPrefix(t, "DEADLINE:") {
+				insertAt++
+			} else {
+				break
+			}
+		}
+		out = append(out, lines[:insertAt]...)
+		out = append(out, "  :PROPERTIES:", "  :GCAL_ID: "+todo.GcalID, "  :END:")
+		out = append(out, lines[insertAt:]...)
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0644)
+}
 
 func WriteEvents(dir string, events []*Event) error {
 	dir = expandHome(dir)

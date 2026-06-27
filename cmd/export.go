@@ -22,7 +22,7 @@ var exportCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		exported, err := client.ExportTodos(todos)
+		exported, _, err := client.ExportTodos(todos)
 		if err != nil {
 			return err
 		}

@@ -66,8 +66,10 @@ func (c *Client) ListEvents() ([]*org.Event, error) {
 	return events, nil
 }
 
-func (c *Client) ExportTodos(todos []*org.Todo) (int, error) {
+// ExportTodos pushes org todos to GCal. Returns count, all active GcalIDs, and error.
+func (c *Client) ExportTodos(todos []*org.Todo) (int, []string, error) {
 	count := 0
+	var gcalIDs []string
 	for _, todo := range todos {
 		calID := c.calendarID
 		if todo.CalendarID != "" {
@@ -77,7 +79,7 @@ func (c *Client) ExportTodos(todos []*org.Todo) (int, error) {
 		// DONE/CANCELLED with GCAL_ID → delete from GCal
 		if todo.GcalID != "" && (todo.State == "DONE" || todo.State == "CANCELLED") {
 			if err := c.svc.Events.Delete(calID, todo.GcalID).Do(); err != nil {
-				return count, err
+				return count, gcalIDs, err
 			}
 			count++
 			continue
@@ -85,16 +87,27 @@ func (c *Client) ExportTodos(todos []*org.Todo) (int, error) {
 
 		if todo.GcalID != "" {
 			if err := c.updateEvent(todo, calID); err != nil {
-				return count, err
+				return count, gcalIDs, err
 			}
+			gcalIDs = append(gcalIDs, todo.GcalID)
 		} else {
-			if err := c.createEvent(todo, calID); err != nil {
-				return count, err
+			newID, err := c.createEvent(todo, calID)
+			if err != nil {
+				return count, gcalIDs, err
+			}
+			todo.GcalID = newID
+			gcalIDs = append(gcalIDs, newID)
+			if err := org.WriteGcalID(todo); err != nil {
+				return count, gcalIDs, err
 			}
 		}
 		count++
 	}
-	return count, nil
+	return count, gcalIDs, nil
+}
+
+func (c *Client) DeleteEvent(gcalID string) error {
+	return c.svc.Events.Delete(c.calendarID, gcalID).Do()
 }
 
 func buildEventDateTime(t time.Time, allDay bool) *googlecalendar.EventDateTime {
@@ -104,7 +117,7 @@ func buildEventDateTime(t time.Time, allDay bool) *googlecalendar.EventDateTime 
 	return &googlecalendar.EventDateTime{DateTime: t.Format(time.RFC3339)}
 }
 
-func (c *Client) createEvent(todo *org.Todo, calID string) error {
+func (c *Client) createEvent(todo *org.Todo, calID string) (string, error) {
 	start := todo.Scheduled
 	if start.IsZero() {
 		start = todo.Deadline
@@ -123,8 +136,11 @@ func (c *Client) createEvent(todo *org.Todo, calID string) error {
 		Start:       buildEventDateTime(start, todo.AllDay),
 		End:         buildEventDateTime(end, todo.AllDay),
 	}
-	_, err := c.svc.Events.Insert(calID, event).Do()
-	return err
+	created, err := c.svc.Events.Insert(calID, event).Do()
+	if err != nil {
+		return "", err
+	}
+	return created.Id, nil
 }
 
 func (c *Client) updateEvent(todo *org.Todo, calID string) error {

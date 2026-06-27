@@ -187,6 +187,26 @@ func parseTags(s string) []string {
 	return tags
 }
 
+// ReadCalendarEventIDs returns GCAL_IDs currently present in gcal/calendar.org.
+// Returns nil (not error) if the file doesn't exist yet.
+func ReadCalendarEventIDs(dir string) ([]string, error) {
+	path := filepath.Join(expandHome(dir), "gcal", "calendar.org")
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if m := gcalIDRe.FindStringSubmatch(line); m != nil {
+			ids = append(ids, m[1])
+		}
+	}
+	return ids, nil
+}
+
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		home, _ := os.UserHomeDir()
