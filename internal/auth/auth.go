@@ -96,19 +96,10 @@ func saveToken(tok *oauth2.Token) error {
 }
 
 func openBrowser(url string) error {
-	// try macOS, Linux, Windows
-	for _, cmd := range []string{
-		"open " + url,
-		"xdg-open " + url,
-		"start " + url,
-	} {
-		if err := runShell(cmd); err == nil {
+	for _, bin := range []string{"open", "xdg-open", "start"} {
+		if err := runCmd(bin, url); err == nil {
 			return nil
 		}
 	}
 	return fmt.Errorf("could not open browser")
-}
-
-func runShell(cmd string) error {
-	return runCmd("sh", "-c", cmd)
 }
