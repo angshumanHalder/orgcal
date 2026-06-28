@@ -22,11 +22,14 @@ var exportCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		exported, _, err := client.ExportTodos(todos)
+		exported, _, conflicts, err := client.ExportTodos(todos)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("Exported %d todos to Google Calendar\n", exported)
+		if len(conflicts) > 0 {
+			fmt.Printf("Conflicts: %d — run :OrgCalResolve in Neovim\n", len(conflicts))
+		}
 		return nil
 	},
 }

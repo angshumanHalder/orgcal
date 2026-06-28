@@ -8,19 +8,12 @@ import (
 	"time"
 )
 
-// WriteGcalID writes the GcalID back into the todo's source org file.
-// Finds the heading by title and inserts/updates :GCAL_ID: in its PROPERTIES drawer.
-func WriteGcalID(todo *Todo) error {
-	path := expandHome(todo.File)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
+// findHeadingIdx returns the line index of the todo's heading.
+// Uses todo.Line as primary locator; falls back to title scan.
+func findHeadingIdx(lines []string, todo *Todo) int {
+	if todo.Line > 0 && todo.Line < len(lines) && headingRe.MatchString(lines[todo.Line]) {
+		return todo.Line
 	}
-
-	lines := strings.Split(string(data), "\n")
-
-	// find first heading matching this title
-	headingIdx := -1
 	for i, line := range lines {
 		if m := headingRe.FindStringSubmatch(line); m != nil {
 			title := strings.TrimSpace(m[4])
@@ -28,54 +21,77 @@ func WriteGcalID(todo *Todo) error {
 				title = strings.TrimSpace(tagsRe.ReplaceAllString(title, ""))
 			}
 			if title == todo.Title {
-				headingIdx = i
-				break
+				return i
 			}
 		}
 	}
+	return -1
+}
+
+// WriteGcalProps writes :GCAL_ID: and :GCAL_ETAG: into the todo's PROPERTIES drawer.
+// Replaces WriteGcalID and handles both insert and update.
+func WriteGcalProps(todo *Todo) error {
+	path := expandHome(todo.File)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+
+	headingIdx := findHeadingIdx(lines, todo)
 	if headingIdx == -1 {
 		return nil
 	}
 
-	propsStart, propsEnd, gcalLine := -1, -1, -1
+	propsStart, propsEnd := -1, -1
+	gcalIDLine, gcalEtagLine := -1, -1
+
 	for i := headingIdx + 1; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 		if strings.HasPrefix(trimmed, "*") {
 			break
 		}
-		if trimmed == ":PROPERTIES:" {
+		switch {
+		case trimmed == ":PROPERTIES:":
 			propsStart = i
-		}
-		if propsStart >= 0 && strings.HasPrefix(trimmed, ":GCAL_ID:") {
-			gcalLine = i
-		}
-		if trimmed == ":END:" && propsStart >= 0 {
+		case propsStart >= 0 && strings.HasPrefix(trimmed, ":GCAL_ID:"):
+			gcalIDLine = i
+		case propsStart >= 0 && strings.HasPrefix(trimmed, ":GCAL_ETAG:"):
+			gcalEtagLine = i
+		case trimmed == ":END:" && propsStart >= 0:
 			propsEnd = i
+		}
+		if propsEnd >= 0 {
 			break
 		}
 	}
 
 	var out []string
-	switch {
-	case gcalLine >= 0:
-		// update existing line
+
+	if propsStart >= 0 && propsEnd >= 0 {
 		for i, line := range lines {
-			if i == gcalLine {
+			switch {
+			case i == gcalIDLine && todo.GcalID != "":
 				out = append(out, "  :GCAL_ID: "+todo.GcalID)
-			} else {
+			case i == gcalEtagLine:
+				if todo.GcalEtag != "" {
+					out = append(out, "  :GCAL_ETAG: "+todo.GcalEtag)
+				} else {
+					out = append(out, line)
+				}
+			case i == propsEnd:
+				if gcalIDLine == -1 && todo.GcalID != "" {
+					out = append(out, "  :GCAL_ID: "+todo.GcalID)
+				}
+				if gcalEtagLine == -1 && todo.GcalEtag != "" {
+					out = append(out, "  :GCAL_ETAG: "+todo.GcalEtag)
+				}
+				out = append(out, line)
+			default:
 				out = append(out, line)
 			}
 		}
-	case propsStart >= 0 && propsEnd >= 0:
-		// insert before :END:
-		for i, line := range lines {
-			if i == propsEnd {
-				out = append(out, "  :GCAL_ID: "+todo.GcalID)
-			}
-			out = append(out, line)
-		}
-	default:
-		// no PROPERTIES block — find insert point after SCHEDULED/DEADLINE lines
+	} else {
 		insertAt := headingIdx + 1
 		for insertAt < len(lines) {
 			t := strings.TrimSpace(lines[insertAt])
@@ -85,12 +101,53 @@ func WriteGcalID(todo *Todo) error {
 				break
 			}
 		}
+		props := []string{"  :PROPERTIES:"}
+		if todo.GcalID != "" {
+			props = append(props, "  :GCAL_ID: "+todo.GcalID)
+		}
+		if todo.GcalEtag != "" {
+			props = append(props, "  :GCAL_ETAG: "+todo.GcalEtag)
+		}
+		props = append(props, "  :END:")
 		out = append(out, lines[:insertAt]...)
-		out = append(out, "  :PROPERTIES:", "  :GCAL_ID: "+todo.GcalID, "  :END:")
+		out = append(out, props...)
 		out = append(out, lines[insertAt:]...)
 	}
 
 	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0644)
+}
+
+// WriteScheduled updates the SCHEDULED: timestamp for a todo (used in gcal-wins resolution).
+func WriteScheduled(todo *Todo) error {
+	path := expandHome(todo.File)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+
+	headingIdx := findHeadingIdx(lines, todo)
+	if headingIdx == -1 {
+		return nil
+	}
+
+	var newLine string
+	if todo.AllDay {
+		newLine = fmt.Sprintf("  SCHEDULED: <%s>", todo.Scheduled.Format("2006-01-02 Mon"))
+	} else {
+		newLine = fmt.Sprintf("  SCHEDULED: <%s>", todo.Scheduled.Format("2006-01-02 Mon 15:04"))
+	}
+
+	for i := headingIdx + 1; i < len(lines); i++ {
+		if headingRe.MatchString(lines[i]) {
+			break
+		}
+		if scheduledRe.MatchString(lines[i]) {
+			lines[i] = newLine
+			return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+		}
+	}
+	return nil
 }
 
 func WriteEvents(dir string, events []*Event) error {

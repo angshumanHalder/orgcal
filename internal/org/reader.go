@@ -41,6 +41,11 @@ func ReadTodos(dir string) ([]*Todo, error) {
 	return todos, err
 }
 
+// ReadTodosFromFile reads todos from a single org file.
+func ReadTodosFromFile(path string) ([]*Todo, error) {
+	return parseTodos(path)
+}
+
 func parseTodos(path string) ([]*Todo, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -60,22 +65,20 @@ func parseTodos(path string) ([]*Todo, error) {
 		}
 		current.Body = strings.TrimSpace(current.Body)
 		current.FileTags = fileTags
-		// export if explicitly marked, or if it's an active TODO/NEXT with a schedule
-		if current.ExportToGcal || (current.State == "TODO" || current.State == "NEXT") {
-			if !current.Scheduled.IsZero() || !current.Deadline.IsZero() {
-				todos = append(todos, current)
-			}
+		isDone := current.State == "DONE" || current.State == "CANCELLED"
+		isActive := current.ExportToGcal || current.State == "TODO" || current.State == "NEXT"
+		hasDate := !current.Scheduled.IsZero() || !current.Deadline.IsZero()
+		if (isActive && hasDate) || (isDone && current.GcalID != "") {
+			todos = append(todos, current)
 		}
 	}
 
-	for _, line := range lines {
-		// file-level tags
+	for i, line := range lines {
 		if m := fileTagsRe.FindStringSubmatch(line); m != nil {
 			fileTags = parseTags(m[1])
 			continue
 		}
 
-		// heading
 		if m := headingRe.FindStringSubmatch(line); m != nil {
 			flush()
 			inProps = false
@@ -85,7 +88,6 @@ func parseTodos(path string) ([]*Todo, error) {
 			priority := m[3]
 			rest := strings.TrimSpace(m[4])
 
-			// extract inline tags from end of title
 			var tags []string
 			if tm := tagsRe.FindStringSubmatch(rest); tm != nil {
 				tags = parseTags(tm[1])
@@ -98,6 +100,7 @@ func parseTodos(path string) ([]*Todo, error) {
 				Priority: priority,
 				Tags:     tags,
 				File:     path,
+				Line:     i,
 			}
 			continue
 		}
@@ -106,7 +109,6 @@ func parseTodos(path string) ([]*Todo, error) {
 			continue
 		}
 
-		// property block boundaries
 		if propBlockRe.MatchString(line) {
 			if strings.Contains(line, "PROPERTIES") {
 				inProps = true
@@ -123,6 +125,8 @@ func parseTodos(path string) ([]*Todo, error) {
 				switch m[1] {
 				case "GCAL_ID":
 					current.GcalID = strings.TrimSpace(m[2])
+				case "GCAL_ETAG":
+					current.GcalEtag = strings.TrimSpace(m[2])
 				case "CALENDAR_ID":
 					current.CalendarID = strings.TrimSpace(m[2])
 				case "EXPORT_TO_GCAL":
@@ -133,7 +137,6 @@ func parseTodos(path string) ([]*Todo, error) {
 			continue
 		}
 
-		// timestamps
 		if m := scheduledRe.FindStringSubmatch(line); m != nil {
 			current.Scheduled, current.AllDay, current.Repeater = parseOrgTimestamp(m[1])
 			if m[2] != "" {
@@ -146,7 +149,6 @@ func parseTodos(path string) ([]*Todo, error) {
 			continue
 		}
 
-		// body text (skip LOGBOOK, drawers)
 		if inBody && !strings.HasPrefix(strings.TrimSpace(line), ":") {
 			current.Body += line + "\n"
 		}
@@ -163,7 +165,6 @@ func parseOrgTimestamp(s string) (t time.Time, allDay bool, rep *Repeater) {
 		repeater = &Repeater{Type: m[1], Value: val, Unit: m[3]}
 	}
 
-	// strip day-of-week (e.g. "Mon") and repeater
 	clean := regexp.MustCompile(`\s+[A-Z][a-z]{2}`).ReplaceAllString(s, "")
 	clean = repeaterRe.ReplaceAllString(clean, "")
 	clean = strings.TrimSpace(clean)
@@ -188,7 +189,6 @@ func parseTags(s string) []string {
 }
 
 // ReadCalendarEventIDs returns GCAL_IDs currently present in gcal/calendar.org.
-// Returns nil (not error) if the file doesn't exist yet.
 func ReadCalendarEventIDs(dir string) ([]string, error) {
 	path := filepath.Join(expandHome(dir), "gcal", "calendar.org")
 	data, err := os.ReadFile(path)
@@ -214,3 +214,7 @@ func expandHome(path string) string {
 	}
 	return path
 }
+
+// suppress unused variable warnings for regexes only used in writer.go
+var _ = calendarIDRe
+var _ = exportRe

@@ -17,7 +17,11 @@ var syncCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Imported: %d  Exported: %d  Deleted: %d\n", result.Imported, result.Exported, result.Deleted)
+		fmt.Printf("Imported: %d  Exported: %d  Deleted: %d  Conflicts: %d\n",
+			result.Imported, result.Exported, result.Deleted, result.Conflicts)
+		if result.Conflicts > 0 {
+			fmt.Printf("Run :OrgCalResolve in Neovim to resolve conflicts\n")
+		}
 		return nil
 	},
 }

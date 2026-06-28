@@ -5,15 +5,17 @@ import (
 
 	"google.golang.org/api/googleapi"
 
+	"github.com/angshumanhalder/orgcal/internal/conflict"
 	"github.com/angshumanhalder/orgcal/internal/gcal"
 	"github.com/angshumanhalder/orgcal/internal/org"
 	"github.com/angshumanhalder/orgcal/internal/state"
 )
 
 type Result struct {
-	Imported int
-	Exported int
-	Deleted  int
+	Imported  int
+	Exported  int
+	Deleted   int
+	Conflicts int
 }
 
 func Run(dir string) (*Result, error) {
@@ -27,13 +29,11 @@ func Run(dir string) (*Result, error) {
 		return nil, err
 	}
 
-	// build set of IDs imported on previous sync
 	prevImported := make(map[string]bool, len(st.ImportedIDs))
 	for _, id := range st.ImportedIDs {
 		prevImported[id] = true
 	}
 
-	// read IDs currently in calendar.org before overwriting
 	currentOrgIDs, err := org.ReadCalendarEventIDs(dir)
 	if err != nil {
 		return nil, err
@@ -52,29 +52,56 @@ func Run(dir string) (*Result, error) {
 				if !errors.As(err, &gErr) || gErr.Code != 410 {
 					return nil, err
 				}
+				// 410 = already deleted on GCal side, treat as success
 			}
 			deleted++
 		}
 	}
 
-	// read todos before WriteEvents so we can filter out exported IDs
 	todos, err := org.ReadTodos(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	// export todos first to capture new GcalIDs written back to org files
-	exported, gcalIDs, err := client.ExportTodos(todos)
+	exported, gcalIDs, newConflicts, err := client.ExportTodos(todos)
 	if err != nil {
 		return nil, err
 	}
 
-	// build set of GcalIDs that belong to org todos — exclude from calendar import
+	// Merge new conflicts with existing unresolved ones
+	if len(newConflicts) > 0 {
+		existing, err := conflict.Load()
+		if err != nil {
+			return nil, err
+		}
+		merged := conflict.Merge(existing, newConflicts)
+		if err := conflict.Save(merged); err != nil {
+			return nil, err
+		}
+	}
+
+	currentExported := make(map[string]bool, len(gcalIDs))
+	for _, id := range gcalIDs {
+		currentExported[id] = true
+	}
+
+	// IDs in prev exported set but gone from org = user deleted the todo heading
+	for _, id := range st.ExportedTodoIDs {
+		if !currentExported[id] {
+			if err := client.DeleteEvent(id); err != nil {
+				var gErr *googleapi.Error
+				if !errors.As(err, &gErr) || gErr.Code != 410 {
+					return nil, err
+				}
+			}
+			deleted++
+		}
+	}
+
 	exportedSet := make(map[string]bool, len(gcalIDs))
 	for _, id := range gcalIDs {
 		exportedSet[id] = true
 	}
-	// also exclude previously tracked exported todo IDs
 	for _, id := range st.ExportedTodoIDs {
 		exportedSet[id] = true
 	}
@@ -84,7 +111,6 @@ func Run(dir string) (*Result, error) {
 		return nil, err
 	}
 
-	// filter out events that are org todos — prevents duplicates in calendar.org
 	var calEvents []*org.Event
 	for _, e := range events {
 		if !exportedSet[e.ID] {
@@ -95,7 +121,6 @@ func Run(dir string) (*Result, error) {
 		return nil, err
 	}
 
-	// update state
 	st.ImportedIDs = make([]string, 0, len(calEvents))
 	for _, e := range calEvents {
 		st.ImportedIDs = append(st.ImportedIDs, e.ID)
@@ -106,5 +131,10 @@ func Run(dir string) (*Result, error) {
 		return nil, err
 	}
 
-	return &Result{Imported: len(calEvents), Exported: exported, Deleted: deleted}, nil
+	return &Result{
+		Imported:  len(calEvents),
+		Exported:  exported,
+		Deleted:   deleted,
+		Conflicts: len(newConflicts),
+	}, nil
 }

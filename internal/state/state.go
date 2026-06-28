@@ -51,5 +51,9 @@ func Save(s *State) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, data, 0644)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
 }
