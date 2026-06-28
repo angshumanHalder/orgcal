@@ -25,4 +25,5 @@ func init() {
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(resolveCmd)
+	rootCmd.AddCommand(dooingCmd)
 }

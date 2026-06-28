@@ -252,6 +252,31 @@ func (c *Client) ForceUpdateEvent(todo *org.Todo, calID string) (string, error) 
 	return updated.Etag, nil
 }
 
+// UpsertDooingEvent creates or updates an all-day GCal event for a dooing todo.
+// If gcalID is empty a new event is created. If the event was deleted on GCal (410) it is recreated.
+func (c *Client) UpsertDooingEvent(gcalID, title string, due time.Time) (string, error) {
+	ev := &googlecalendar.Event{
+		Summary: title,
+		Start:   &googlecalendar.EventDateTime{Date: due.Format("2006-01-02")},
+		End:     &googlecalendar.EventDateTime{Date: due.AddDate(0, 0, 1).Format("2006-01-02")},
+	}
+	if gcalID != "" {
+		updated, err := c.svc.Events.Update(c.calendarID, gcalID, ev).Do()
+		if err == nil {
+			return updated.Id, nil
+		}
+		var gErr *googleapi.Error
+		if !errors.As(err, &gErr) || gErr.Code != 410 {
+			return "", err
+		}
+	}
+	created, err := c.svc.Events.Insert(c.calendarID, ev).Do()
+	if err != nil {
+		return "", err
+	}
+	return created.Id, nil
+}
+
 func formatTime(t time.Time, allDay bool) string {
 	if t.IsZero() {
 		return ""
