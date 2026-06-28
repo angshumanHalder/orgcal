@@ -17,6 +17,9 @@ type Result struct {
 
 func Sync(filePath string) (*Result, error) {
 	data, err := os.ReadFile(filePath)
+	if os.IsNotExist(err) {
+		return &Result{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
